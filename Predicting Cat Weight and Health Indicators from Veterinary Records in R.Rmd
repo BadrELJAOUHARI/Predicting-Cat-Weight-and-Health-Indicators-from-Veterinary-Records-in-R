@@ -1,0 +1,517 @@
+---
+title: "Predicting Cat Weight and Health Indicators from Veterinary Records in R"
+author: "Badr EL JAOUHARI"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+## Part 1: Tidy the data
+
+
+```{r}
+# Load data --------------------------------------------------------------
+# Here we’re reading the dataset from the CSV file into R
+
+data <- read.csv("vet.data.csv")
+
+
+# Step 1: Reshape data from long to wide ---------------------------------
+# Here we’re spreading the 'type' column into separate columns (value2017_weight,value2017_BMI,value2018_weight,value2018_BMI)
+# Each measurment (weight & BMI) now gets its own column for value2017 and value2018
+data_1 <- data %>%
+  pivot_wider(
+    names_from = type,
+    values_from = c(value2017, value2018)
+  )
+
+# Step 2: Split gender and age into two columns --------------------------
+# The 'gender.and.age' column combines both pieces of info, (ex: F_15)
+# So here we split it into two separate columns: Gender and Age
+data_2 <- data_1 %>%
+  separate(
+    gender.and.age,
+    into = c("Gender", "Age"),
+    sep = "_"
+  )
+
+# Step 3: Reshape data back to long format -------------------------------
+# Now we gather the value2017_weight/BMI and value2018_weight/BMI columns back into long form
+# This gives us a column 'year' (value_2017 or value_2018) and columns for each measurement (weight & BMI)
+data_3 <- data_2 %>%
+  pivot_longer(
+    starts_with("value"),
+    names_to = c("year", ".value"),
+    names_sep = "_"
+  )
+
+# Step 4: Clean up names and fix year labels -----------------------------
+# Here we’re renaming columns for readability and correcting the year labels
+# By using fct_recode() we are making sure the year column only has "2017" and "2018"
+data_tidy <- data_3 %>%
+  mutate(
+    year = fct_recode(
+      year,
+      "2017" = "value2017",
+      "2018" = "value2018"
+    )
+  ) %>%
+  rename(
+    Clinic = clinic,
+    Client = client,
+    Breed = breed,
+    Food_Quality = food.quality,
+    Area = area,
+    Year = year,
+    Weight = weight
+  )
+data_tidy  # Our final tidy dataset now ready for analysis
+```
+
+
+## Part 2: Analyse the data
+
+### a.
+Let's visualize the distribution of breed, food quality and area. Also visualize the distribution of weight conditional on breed to see which breed has the lowest mean weight and which cat has the highest observed weight.
+
+```{r}
+# Here we are looking at the count of cats per breed
+data_tidy %>%
+  ggplot(aes(x = Breed)) +
+  geom_bar(fill = "#6DDE88") +  # using a color to make it nicer
+  labs(title = "Distribution of Cat Breeds",
+       x = "Breed",
+       y = "Count") +
+  theme_minimal()
+
+# Here we are looking at the distribution of food quality
+data_tidy %>%
+  ggplot(aes(x = Food_Quality)) +
+  geom_bar(fill = "#6DDE88") +
+  labs(title = "Distribution of Food Quality",
+       x = "Food Quality",
+       y = "Count") +
+  theme_minimal()
+
+# Here we are looking at the distribution of area
+data_tidy %>%
+  ggplot(aes(x = Area)) +
+  geom_bar(fill = "#6DDE88") +
+  labs(title = "Distribution of Area",
+       x = "Area",
+       y = "Count") +
+  theme_minimal()
+
+# Boxplot of weight by breed to see which breed has lowest mean weight
+data_tidy %>%
+  ggplot(aes(x = Breed, y = Weight)) +
+  geom_boxplot(fill = "#A6CEE3") +
+  labs(title = "Weight Distribution by Breed",
+       x = "Breed",
+       y = "Weight in lbs") +
+  theme_minimal()
+
+# Density plots of weight by breed for a better sense of distribution
+data_tidy %>%
+  ggplot(aes(x = Weight, color = Breed, fill = Breed)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~Breed) +
+  labs(title = "Weight Density by Breed",
+       x = "Weight in lbs",
+       y = "Density") +
+  theme_minimal()
+
+# Now, we calculate the average weight for each breed.
+data_tidy %>%
+  group_by(Breed) %>% 
+  summarize(
+    avg_weight = mean(Weight) 
+  )
+
+# The Burmese breed has the lowest mean weight (9.146 lbs)
+
+# Then, we calculate the highest observed weight per breed.
+data_tidy %>%
+  group_by(Breed) %>% 
+  summarize(
+    high_weight = max(Weight) 
+  )
+
+# The American Shorthair has the highest observed weight (22.9 lbs)
+
+# The results match what we see in the visualizations above.
+```
+
+### b.
+Let's see what is the mean weight per clinic for female cats and for males.
+
+```{r}
+# For female cats
+data_tidy %>%
+  filter(Gender == "F") %>% 
+  group_by(Clinic, Gender)  %>% 
+  summarize(
+    mean_weight = mean(Weight, na.rm = TRUE),
+    min_weight = min(Weight, na.rm = TRUE)
+  )
+
+# For male cats
+data_tidy %>%
+  filter(Gender == "M") %>% 
+  group_by(Clinic, Gender)  %>% 
+  summarize(
+    mean_weight = mean(Weight, na.rm = TRUE),
+    min_weight = min(Weight, na.rm = TRUE)
+  )
+```
+
+
+## c.
+In the previous output we saw some unlikely values for weight. We assume that all values under 2.5 pound are coded wrong and delete these values. Let's see which unique client ID’s have been influenced.
+
+```{r}
+# First, we check which clients have cats with weight below 2.5 lbs
+# These are probably data entry errors or wrong measurements
+data_tidy %>%
+  filter(Weight < 2.5) %>% 
+  distinct(Client)  # Show unique client IDs affected (16,12,17)
+
+# Now we remove all rows where weight is less than 2.5 lbs
+data_clean <- data_tidy %>%
+  filter(!(Weight < 2.5))
+
+```
+
+
+## d.
+Now we think about transforming the weight variable from lbs to kg and dropping the old variable from the dataset.
+
+```{r}
+data_final <- data_clean %>%
+  mutate(
+    "Weight_new" = round(Weight * 0.453592, digits = 2),  # We convert pounds to kilograms and round it up to 2 digits
+    .before = Weight            # We place the new column before the old Weight column
+  ) %>%
+  select(-Weight) %>%                  # We remove the old Weight column in lbs
+  rename(Weight = Weight_new)   # Finally, we rename the new column back to "Weight"
+
+data_final # We take a quick look at our final dataset.
+```
+
+
+## e.
+Now it's time to inspect the relation between area and feed to see is there a clear pattern. We will also use a chi-square test and report the p-value for the test of no association between area and feed.
+
+```{r}
+# We create a simple table to see counts of combinations of Area and Food Quality
+table(data_final$Area, data_final$Food_Quality)
+
+# We then make a heatmap to visualize the relationship more clearly
+data_final %>%
+  count(Area, Food_Quality) %>%       # Count number of cats in each Area-Food combination
+  ggplot(aes(x = Food_Quality, y = Area, fill = n)) +
+  geom_tile(color = "white") +        # Use tiles to show counts
+  scale_fill_gradient(low = "lightcyan", high = "darkcyan") +  # Gradient from low to high counts
+  geom_text(aes(label = n), color = "black") +                 # Add count labels on tiles
+  labs(
+    title = "Relationship between Area and Food Quality",
+    x = "Food Quality",
+    y = "Area",
+    fill = "Count"
+  ) +
+  theme_minimal()                     # We choose a clean minimal theme for clarity
+
+# We run a chi-square test to see if Area and Food Quality are independent
+chisq_test <- chisq.test(table(data_final$Area, data_final$Food_Quality))
+chisq_test$p.value 
+
+# p-value = 0.1265, p-value > 0.05 means there is no significant association between Area and Food
+
+# Although the heatmap visually suggests that lower and mid-quality food (I and II) are more common in all areas and premium food (IV) is rare, especially in rural regions (with Suburban areas have the highest number of cats on all types). The Chi-squared test result indicates there is no statistically significant association between area and food quality (p-value = 0.1265). Therefore, despite apparent differences in the distribution, there is not a clear pattern supported by statistical evidence
+```
+
+## f.
+Let's now visualize the relationship between feline BMI and food quality. Let's also do this again, but take breed into account.
+
+```{r}
+# First, we visualize average BMI by Food Quality across all cats using a bar chart
+data_final %>% 
+  ggplot(aes(x = Food_Quality, y = BMI)) +
+  geom_bar(stat = "summary", fun = "mean", fill = "#C84248") +  # Bar height = mean BMI
+  stat_summary(fun = "mean", geom = "label", aes(label = round(..y.., 1)), size = 5) +  # Add mean values as labels
+  labs(
+    title = "Average BMI by Food Quality",
+    x = "Food Quality",
+    y = "Mean BMI"
+  ) +
+  theme_minimal()
+
+# Now, we look at BMI by Food Quality but separated for each Breed using separated bar charts (by cat Breed)
+data_final %>% 
+  ggplot(aes(x = Food_Quality, y = BMI, fill = Breed)) +
+  geom_bar(stat = "summary", fun = "mean") +  # Bars = mean BMI for each Breed and Food Quality
+  stat_summary(fun = "mean", geom = "label", aes(label = round(..y.., 1)), size = 2) +  # Add labels
+  facet_wrap(~Breed) +                       # Separate plot for each Breed
+  labs(
+    title = "Average BMI by Food Quality and Breed",
+    x = "Food Quality",
+    y = "Mean BMI"
+  ) +
+  theme_minimal()                            
+```
+
+
+## Part 3: Prediction — Modeling Cat Weight from Other Variables
+
+We’ll build a simple predictive model to estimate a cat’s weight based on:
+
+* Breed
+
+* Gender
+
+* Age
+
+* BMI
+
+* Food_Quality
+
+* Area
+
+* Year
+
+We’ll test different models and evaluate them using R² and RMSE (Root Mean Squared Error).
+
+```{r}
+# Load libraries needed for modeling
+install_packages <- function() {
+
+install.packages("xgboost")
+
+install.packages("mlr")
+
+install.packages("caret")
+
+install.packages("coda")
+
+install.packages("data.table")
+
+install.packages("cplm")
+
+}
+
+#install.packages("caret", lib = "C:/Users/eljao/OneDrive/Documentos/UU", repos='http://cran.us.r-project.org')
+#install_packages("tidymodel")
+#install.packages('UU/R Packages/recipes_1.3.1.zip', lib='C:/Users/eljao/OneDrive/Documentos/UU/R packages',repos = NULL)
+#install.packages('UU/R Packages/future.apply_1.20.0.zip', lib='C:/Users/eljao/OneDrive/Documentos/UU/R packages',repos = NULL)
+
+#install.packages('UU/R Packages/future_1.67.0.zip', lib='C:/Users/eljao/OneDrive/Documentos/UU/R packages',repos = NULL)
+
+
+#library(future, lib.loc = "UU/R Packages/" )
+#install.packages("caret", repos=c("http://rstudio.org/_packages",
+#"http://cran.rstudio.com",dependencies=TRUE))
+#install.packages("tidymodels")
+
+
+install.packages <- utils::install.packages
+library(tidymodels)       # for splitting data
+library(randomForest)  # for Random Forest model
+library(ggcorrplot)    # for correlation plots
+library(yardstick)     # for evaluation metrics (optional)
+install.packages("rsample")
+library(caret)
+library(caret)
+library(ggcorrplot)
+
+install.packages("caret",
+                 repos = "http://cran.r-project.org", 
+                 dependencies = c("Depends", "Imports", "Suggests"))
+
+# Check missing values ---------------------------------------------------
+colSums(is.na(data_final))
+
+# No missing values have been found
+
+# Convert categorical variables to factors -------------------------------
+data_model <- data_final %>%
+  mutate(
+    Breed = as.factor(Breed),
+    Gender = as.factor(Gender),
+    Food_Quality = as.factor(Food_Quality),
+    Area = as.factor(Area),
+    Year = as.factor(Year)
+  )
+
+# Correlation analysis (for numeric vars only)
+numeric_vars <- data_model %>%
+  select(Age, BMI, Weight) %>%
+  mutate(across(everything(), as.numeric))
+
+
+cor_matrix <- cor(numeric_vars)
+ggcorrplot(cor_matrix, lab = TRUE, title = "Correlation Matrix of Numeric Variables")
+
+```
+
+We see that BMI is positively correlated with Weight, as expected, and Age has a weaker to non-exsitent effect.
+
+
+### We now split data into training and testing sets
+
+```{r}
+set.seed(241124)
+split <- initial_split(data_model, prop = 0.8)
+train_data <- training(split)
+test_data <- testing(split)
+```
+
+
+### Linear Regression Model
+
+```{r}
+# Fit model
+lm_model <- lm(Weight ~ Breed + Gender + Age + BMI + Food_Quality + Area + Year, data = train_data)
+
+# Model summary
+summary(lm_model)
+
+# Predictions
+pred_lm <- predict(lm_model, newdata = test_data)
+
+# Manual model evaluation
+rmse_lm <- sqrt(mean((test_data$Weight - pred_lm)^2))
+r2_lm <- cor(test_data$Weight, pred_lm)^2
+
+lm_results <- data.frame(Model = "Linear Regression", RMSE = rmse_lm, R2 = r2_lm)
+lm_results
+
+```
+
+R² ≈ 0.87, that means 87% of the variance in Weight is explained by the predictors.
+
+### Random Forest Model
+
+```{r}
+set.seed(123)
+rf_model <- randomForest(
+  Weight ~ Breed + Gender + Age + BMI + Food_Quality + Area + Year,
+  data = train_data,
+  ntree = 300,
+  importance = TRUE
+)
+
+# Predictions
+pred_rf <- predict(rf_model, newdata = test_data)
+
+# Evaluation
+rmse_rf <- sqrt(mean((test_data$Weight - pred_rf)^2))
+r2_rf <- cor(test_data$Weight, pred_rf)^2
+
+rf_results <- data.frame(Model = "Random Forest", RMSE = rmse_rf, R2 = r2_rf)
+rf_results
+
+# Compare models
+rbind(lm_results, rf_results)
+
+```
+
+### Feature Importance
+
+```{r}
+# Show numeric importance values
+importance(rf_model)
+
+# Visualize
+varImpPlot(rf_model, main = "Feature Importance in Predicting Cat Weight")
+
+```
+BMI is the strongest predictor.
+Breed and comes next, meaning diet and genetics heavily influence cat weight.
+
+
+### Visualize predictions
+
+```{r}
+# Combine predictions and actuals
+results <- test_data %>%
+  mutate(
+    Predicted_RF = pred_rf,
+    Predicted_LM = pred_lm,
+    Error_RF = Weight - pred_rf
+  )
+
+# Predicted vs Actual (Random Forest)
+results %>%
+  ggplot(aes(x = Weight, y = Predicted_RF)) +
+  geom_point(color = "#4C9A2A", alpha = 0.7) +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  labs(
+    title = "Predicted vs Actual Cat Weight (Random Forest)",
+    x = "Actual Weight (kg)",
+    y = "Predicted Weight (kg)"
+  ) +
+  theme_minimal()
+
+# Residual distribution
+results %>%
+  ggplot(aes(x = Error_RF)) +
+  geom_histogram(binwidth = 0.2, fill = "#69B3A2", color = "white") +
+  labs(
+    title = "Distribution of Prediction Errors (Random Forest)",
+    x = "Error (Actual - Predicted)",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+```
+
+**Predicted vs Actual Plot (Random Forest)**
+
+In the first plot, each point compares predicted vs actual cat weight. Most points are close to the red dashed line (the perfect prediction line), meaning the model predicts well overall.
+However, a few points deviate from the line, showing small prediction errors. The pattern stays mostly linear, so the model captures the general trend of weight correctly.
+
+**Error Distribution (Random Forest)**
+
+The second plot shows the distribution of prediction errors (actual – predicted).
+Most errors are centered around 0, meaning predictions are generally accurate.
+The distribution is slightly skewed to the right, suggesting the model tends to slightly underpredict some weights. A few larger errors on the right indicate outliers — heavier cats where the model underestimated the weight.
+
+
+## Model Performance Summary
+
+| Model            | RMSE   | R²     |
+|------------------|--------|--------|
+| Linear Regression | 0.5772 | 0.8732 |
+| Random Forest     | 0.6829 | 0.8907 |
+
+The **Random Forest model** achieved a slightly higher $R^2$ (0.89) than the Linear Regression (0.87), meaning it explains a bit more variance in cat weight.  
+However, its **RMSE** (0.68) is slightly higher, which indicates its predictions are a bit less precise on average.  
+
+In other words, Random Forest captures more complex relationships in the data, but its predictions fluctuate a bit more compared to Linear Regression.
+
+---
+
+Overall, both models perform well.
+
+- **Linear Regression** is more consistent (lower RMSE).  
+- **Random Forest** captures more variance and is better at fitting nonlinear patterns (higher $R^2$).
+
+If interpretability and simplicity are important, **Linear Regression** is the better choice.  
+If the goal is to capture more subtle relationships, **Random Forest** is stronger — though with a small tradeoff in prediction precision.
+
+## Final Analytical Insights
+
+- Breed: Burmese cats weigh the least, American Shorthairs the most.
+→ Genetics matter.
+
+- Diet: Premium food (III–IV) links to slightly higher BMI → richer food, heavier cats.
+
+- Area: No statistically strong difference in diet by region (Chi-square p = 0.12).
+→ Cat diet distribution is fairly uniform across locations.
+
+**Key Predictors**: BMI, Breed, Food_Quality
+→ Cats’ weight depends on both internal (BMI, genetics) and external (food) factors.
+
